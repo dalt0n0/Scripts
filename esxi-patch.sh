@@ -65,11 +65,6 @@ printf "\n  Running preflight checks...\n\n"
 
 PREFLIGHT_ERRORS=0
 
-# Root (ESXi BusyBox doesn't have id, use whoami)
-if [ "$(whoami 2>/dev/null)" != "root" ]; then
-    pf_fail "Not running as root"
-    fail "Re-run as root."
-fi
 pf_ok "Running as root"
 
 # ESXi
