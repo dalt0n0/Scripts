@@ -83,7 +83,7 @@ pf_ok "vim-cmd available"
 
 # Host info
 HOSTNAME=$(/bin/esxcli system hostname get 2>/dev/null | awk '/Fully Qualified/ {print $NF}')
-VERSION=$(/bin/esxcli system version get 2>/dev/null | awk '/Version/ {print $3}')
+VERSION=$(/bin/esxcli system version get 2>/dev/null | awk '/Version/ {print $2}')
 BUILD=$(/bin/esxcli system version get 2>/dev/null | awk '/Build/ {print $2}')
 pf_ok "Host: ${HOSTNAME:-unknown}  |  ESXi ${VERSION:-?}  build ${BUILD:-?}"
 
@@ -193,7 +193,7 @@ for f in "${PATCH_DIR}"/*.zip "${PATCH_DIR}"/*.ZIP \
 done
 FILE_TOTAL=$IDX
 
-[ "$FILE_TOTAL" -eq 0 ] && fail "No .zip or .vib files found in ${PATCH_DIR}"
+[ "$FILE_TOTAL" -eq 0 ] && fail "No .zip files found in ${PATCH_DIR}"
 
 printf "\n  Select [1-%d]: " "$FILE_TOTAL"
 read FILE_IDX
@@ -204,30 +204,59 @@ eval "SELECTED_FILE=\$FILENAME_${FILE_IDX}"
 DEPOT_PATH="${PATCH_DIR}/${SELECTED_FILE}"
 [ -r "$DEPOT_PATH" ] || fail "Cannot read: $DEPOT_PATH"
 
-case "$SELECTED_FILE" in
-    *.zip|*.ZIP) DEPOT_FLAG="-d" ;;
-    *.vib|*.VIB) DEPOT_FLAG="-v" ;;
-    *)           DEPOT_FLAG="-d" ; warn "Unknown extension, assuming depot (-d)" ;;
-esac
-
 info "Patch file: $SELECTED_FILE"
 
 # ------------------------------------------------------------------------------
-# VIB COMMAND
+# SELECT PROFILE
 # ------------------------------------------------------------------------------
 
 printf "\n%s\n" "$SEP_S"
-printf "  Step 3/5 -- VIB Command\n"
+printf "  Step 3/5 -- Select Profile\n"
 printf "%s\n\n" "$SEP_S"
-printf "  [1] update   Install only if newer version available (recommended)\n"
-printf "  [2] install  Force install regardless of version\n"
+printf "  Reading profiles from depot (this may take a moment)...\n\n"
+
+IDX=0
+while IFS= read -r line; do
+    # Skip header line and empty lines
+    printf "%s" "$line" | grep -q "^Name\|^---\|^$" && continue
+    PNAME=$(printf "%s" "$line" | awk '{print $1}')
+    [ -z "$PNAME" ] && continue
+    IDX=$((IDX+1))
+    printf "  [%d] %s\n" "$IDX" "$PNAME"
+    eval "PROFILE_${IDX}=${PNAME}"
+done << PROFLIST
+$(/bin/esxcli software sources profile list -d "$DEPOT_PATH" 2>/dev/null)
+PROFLIST
+PROFILE_TOTAL=$IDX
+
+if [ "$PROFILE_TOTAL" -eq 0 ]; then
+    fail "No profiles found in depot. Check the zip is a valid ESXi depot."
+fi
+
+printf "\n  Select [1-%d]: " "$PROFILE_TOTAL"
+read PROFILE_IDX
+case "$PROFILE_IDX" in ''|*[!0-9]*) fail "Invalid input." ;; esac
+[ "$PROFILE_IDX" -lt 1 ] || [ "$PROFILE_IDX" -gt "$PROFILE_TOTAL" ] && fail "Out of range."
+
+eval "SELECTED_PROFILE=\$PROFILE_${PROFILE_IDX}"
+info "Profile: $SELECTED_PROFILE"
+
+# ------------------------------------------------------------------------------
+# PROFILE COMMAND
+# ------------------------------------------------------------------------------
+
+printf "\n%s\n" "$SEP_S"
+printf "  Step 4/5 -- Profile Command\n"
+printf "%s\n\n" "$SEP_S"
+printf "  [1] update   Apply profile, keep third-party VIBs (recommended)\n"
+printf "  [2] install  Apply profile, removes any VIBs not in the profile\n"
 printf "\n  Select [1-2] (default 1): "
-read VIB_IDX
-case "$VIB_IDX" in
-    2) VIB_CMD="install" ;;
-    *) VIB_CMD="update"  ;;
+read PROFILE_CMD_IDX
+case "$PROFILE_CMD_IDX" in
+    2) PROFILE_CMD="install" ;;
+    *) PROFILE_CMD="update"  ;;
 esac
-info "VIB command: $VIB_CMD"
+info "Profile command: $PROFILE_CMD"
 
 # ------------------------------------------------------------------------------
 # SELECT MANAGEMENT VM
@@ -236,7 +265,7 @@ info "VIB command: $VIB_CMD"
 # ------------------------------------------------------------------------------
 
 printf "\n%s\n" "$SEP_S"
-printf "  Step 4/5 -- Select Your Management VM\n"
+printf "  Step 5/5 -- Select Your Management VM\n"
 printf "\n  This VM will receive a graceful shutdown signal before the host\n"
 printf "  reboots. Auto-start is already configured so it comes back on its own.\n"
 printf "%s\n\n" "$SEP_S"
@@ -245,7 +274,7 @@ IDX=0
 while IFS= read -r line; do
     VMID=$(printf "%s" "$line" | awk '{print $1}')
     VMNAME=$(printf "%s" "$line" | awk '{print $2}')
-    GUESTOS=$(printf "%s" "$line" | awk '{print $4}')
+    GUESTOS=$(printf "%s" "$line" | awk '{print $5}')
     [ -z "$VMID" ] && continue
     IDX=$((IDX+1))
     printf "  [%d] %-35s %-30s (VMID: %s)\n" "$IDX" "$VMNAME" "$GUESTOS" "$VMID"
@@ -283,7 +312,7 @@ fi
 AUTO_EXIT_MM=0
 if [ "$RC_LOCAL_OK" -eq 1 ]; then
     printf "\n%s\n" "$SEP_S"
-    printf "  Step 5/5 -- Post-Reboot Maintenance Mode\n"
+    printf "  Post-Reboot Maintenance Mode\n"
     printf "%s\n\n" "$SEP_S"
     printf "  After rebooting, the host stays in maintenance mode until cleared.\n"
     printf "  Auto-exit maintenance mode on first boot? [y/N]: "
@@ -304,13 +333,14 @@ printf "%s\n" "$SEP"
 printf "  Host          : %s  (ESXi %s build %s)\n" "${HOSTNAME:-unknown}" "${VERSION:-?}" "${BUILD:-?}"
 printf "  Datastore     : %s\n" "$SELECTED_DS"
 printf "  Patch file    : %s\n" "$SELECTED_FILE"
-printf "  Command       : /bin/esxcli software vib %s %s\n" "$VIB_CMD" "$DEPOT_FLAG"
+printf "  Profile       : %s\n" "$SELECTED_PROFILE"
+printf "  Command       : /bin/esxcli software profile %s\n" "$PROFILE_CMD"
 printf "  Management VM : %s\n" "$MGMT_VMNAME"
 printf "  Auto-exit MM  : %s\n" "$([ $AUTO_EXIT_MM -eq 1 ] && printf yes || printf no)"
 printf "\n  Sequence:\n"
-printf "    1. Enter maintenance mode\n"
-printf "    2. Hand off to background process\n"
-printf "    3. Gracefully shut down '%s'  <-- your session drops here\n" "$MGMT_VMNAME"
+printf "    1. Hand off to background process\n"
+printf "    2. Gracefully shut down '%s'  <-- your session drops here\n" "$MGMT_VMNAME"
+printf "    3. Enter maintenance mode\n"
 printf "    4. Apply patch\n"
 printf "    5. Reboot host\n"
 [ "$AUTO_EXIT_MM" -eq 1 ] && \
@@ -327,11 +357,12 @@ case "$CONFIRM" in
 esac
 
 sep
-info "User confirmed -- beginning patch sequence"
+info "User confirmed -- building execution plan"
 seps
 
 # ------------------------------------------------------------------------------
 # AUTO-EXIT MM HOOK
+# Write this now so it survives into the next boot regardless of what happens.
 # ------------------------------------------------------------------------------
 
 if [ "$AUTO_EXIT_MM" -eq 1 ]; then
@@ -351,29 +382,9 @@ RC_EOF
 fi
 
 # ------------------------------------------------------------------------------
-# ENTER MAINTENANCE MODE
-# ------------------------------------------------------------------------------
-
-info "[1/3] Entering maintenance mode..."
-/bin/esxcli system maintenanceMode set --enable true
-
-WAITED=0
-while [ "$(/bin/esxcli system maintenanceMode get 2>/dev/null)" != "Enabled" ]; do
-    sleep 5
-    WAITED=$((WAITED+5))
-    info "      Waiting... (${WAITED}s)"
-    if [ "$WAITED" -ge 120 ]; then
-        [ "$AUTO_EXIT_MM" -eq 1 ] && {
-            sed -i '/ESXI_PATCH_EXIT_MM/d' /etc/rc.local.d/local.sh
-            sed -i '/maintenanceMode set --enable false/d' /etc/rc.local.d/local.sh
-        }
-        fail "Timed out waiting for maintenance mode."
-    fi
-done
-ok "[1/3] Maintenance mode active"
-
-# ------------------------------------------------------------------------------
-# BUILD BACKGROUND EXEC SCRIPT + LAUNCH
+# BUILD AND LAUNCH BACKGROUND EXEC SCRIPT
+# All host changes happen here -- nothing runs in the foreground after this.
+# Correct order: shutdown VM -> enter MM -> apply patch -> reboot
 # ------------------------------------------------------------------------------
 
 info "Writing background execution script..."
@@ -384,21 +395,34 @@ LOG_FILE="${LOG_FILE}"
 MGMT_VMID="${MGMT_VMID}"
 MGMT_VMNAME="${MGMT_VMNAME}"
 DEPOT_PATH="${DEPOT_PATH}"
-VIB_CMD="${VIB_CMD}"
-DEPOT_FLAG="${DEPOT_FLAG}"
+SELECTED_PROFILE="${SELECTED_PROFILE}"
+PROFILE_CMD="${PROFILE_CMD}"
+AUTO_EXIT_MM="${AUTO_EXIT_MM}"
 
 log() { printf "[%s] %s\n" "\$(date '+%H:%M:%S')" "\$*" >> "\$LOG_FILE"; }
 info() { log "INFO  \$*"; }
 ok()   { log "OK    \$*"; }
 warn() { log "WARN  \$*"; }
 
+abort() {
+    warn "\$*"
+    warn "Aborting -- exiting maintenance mode if active"
+    /bin/esxcli system maintenanceMode set --enable false 2>/dev/null
+    [ "\$AUTO_EXIT_MM" = "1" ] && {
+        sed -i '/ESXI_PATCH_EXIT_MM/d' /etc/rc.local.d/local.sh 2>/dev/null
+        sed -i '/maintenanceMode set --enable false/d' /etc/rc.local.d/local.sh 2>/dev/null
+    }
+    exit 1
+}
+
 info "========================================================"
 info "Background exec started (PID \$\$)"
 info "========================================================"
 
-# -- Graceful VM shutdown --
+# -- STEP 1: Shut down management VM --
+# Must happen before maintenance mode so the host isn't blocked by running VMs.
 if [ -n "\$MGMT_VMID" ]; then
-    info "[2/3] Sending graceful shutdown to '\${MGMT_VMNAME}' (VMID \${MGMT_VMID})"
+    info "[1/3] Sending graceful shutdown to '\${MGMT_VMNAME}' (VMID \${MGMT_VMID})"
     VM_STATE=\$(/bin/vim-cmd vmsvc/power.getstate "\$MGMT_VMID" 2>/dev/null | tail -1)
 
     if printf "%s" "\$VM_STATE" | grep -qi "on"; then
@@ -414,41 +438,51 @@ if [ -n "\$MGMT_VMID" ]; then
             printf "%s" "\$STATE" | grep -qi "off" && { ok "      VM powered off cleanly"; break; }
         done
 
-        # Force off if still running
+        # Force off if graceful shutdown timed out
         STATE=\$(/bin/vim-cmd vmsvc/power.getstate "\$MGMT_VMID" 2>/dev/null | tail -1)
         if ! printf "%s" "\$STATE" | grep -qi "off"; then
             warn "      Graceful shutdown timed out -- forcing power off"
             /bin/vim-cmd vmsvc/power.off "\$MGMT_VMID" >> "\$LOG_FILE" 2>&1
-            sleep 5
+            sleep 10
         fi
     else
-        warn "      VM not powered on (state: \${VM_STATE}) -- skipping"
+        warn "      VM not powered on (state: \${VM_STATE}) -- skipping shutdown"
     fi
 else
-    info "[2/3] No management VM selected -- skipping shutdown"
+    info "[1/3] No management VM selected -- skipping shutdown"
 fi
 
-# -- Apply patch --
-info "[3/3] Applying patch..."
-info "      /bin/esxcli software vib \${VIB_CMD} \${DEPOT_FLAG} \${DEPOT_PATH}"
+# -- STEP 2: Enter maintenance mode --
+info "[2/3] Entering maintenance mode..."
+/bin/esxcli system maintenanceMode set --enable true
 
-/bin/esxcli software vib "\$VIB_CMD" "\$DEPOT_FLAG" "\$DEPOT_PATH" >> "\$LOG_FILE" 2>&1
+WAITED=0
+while [ "\$(/bin/esxcli system maintenanceMode get 2>/dev/null)" != "Enabled" ]; do
+    sleep 5
+    WAITED=\$((WAITED+5))
+    info "      Waiting... (\${WAITED}s)"
+    if [ "\$WAITED" -ge 120 ]; then
+        abort "Timed out waiting for maintenance mode after 120s"
+    fi
+done
+ok "[2/3] Maintenance mode active"
+
+# -- STEP 3: Apply patch --
+info "[3/3] Applying patch..."
+info "      /bin/esxcli software profile \${PROFILE_CMD} -d \${DEPOT_PATH} -p \${SELECTED_PROFILE}"
+
+/bin/esxcli software profile "\$PROFILE_CMD" -d "\$DEPOT_PATH" -p "\$SELECTED_PROFILE" >> "\$LOG_FILE" 2>&1
 PATCH_RC=\$?
 
 if [ \$PATCH_RC -ne 0 ]; then
-    if tail -5 "\$LOG_FILE" | grep -qi "no update\|already installed\|downgrade"; then
-        warn "Patch appears to already be applied -- rebooting anyway"
+    if tail -5 "\$LOG_FILE" | grep -qiE "no upgrade|already installed|up-to-date"; then
+        warn "Patch appears already applied -- rebooting anyway"
     else
-        warn "Patch FAILED (exit code \$PATCH_RC) -- aborting reboot"
-        warn "Exiting maintenance mode. Reconnect and check: \$LOG_FILE"
-        /bin/esxcli system maintenanceMode set --enable false
-        sed -i '/ESXI_PATCH_EXIT_MM/d' /etc/rc.local.d/local.sh 2>/dev/null
-        sed -i '/maintenanceMode set --enable false/d' /etc/rc.local.d/local.sh 2>/dev/null
-        exit 1
+        abort "Patch FAILED (exit code \$PATCH_RC) -- reconnect and check: \$LOG_FILE"
     fi
 fi
 
-ok "Patch applied -- rebooting in 5 seconds"
+ok "[3/3] Patch applied -- rebooting in 5 seconds"
 sleep 5
 reboot
 EXECEOF
