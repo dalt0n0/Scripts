@@ -68,34 +68,34 @@ PREFLIGHT_ERRORS=0
 pf_ok "Running as root"
 
 # ESXi
-if ! command -v esxcli > /dev/null 2>&1; then
-    pf_fail "esxcli not found -- must run on an ESXi host shell"
+if ! /bin/esxcli system version get > /dev/null 2>&1; then
+    pf_fail "/bin/esxcli not responding at /bin/esxcli"
     fail "Not an ESXi host."
 fi
-pf_ok "esxcli available"
+pf_ok "/bin/esxcli available"
 
 # vim-cmd
-if ! command -v vim-cmd > /dev/null 2>&1; then
-    pf_fail "vim-cmd not found"
+if [ ! -x "/bin/vim-cmd" ]; then
+    pf_fail "vim-cmd not found at /bin/vim-cmd"
     fail "vim-cmd is required for VM management."
 fi
 pf_ok "vim-cmd available"
 
 # Host info
-HOSTNAME=$(esxcli system hostname get 2>/dev/null | awk '/Fully Qualified/ {print $NF}')
-VERSION=$(esxcli system version get 2>/dev/null | awk '/Version/ {print $3}')
-BUILD=$(esxcli system version get 2>/dev/null | awk '/Build/ {print $2}')
+HOSTNAME=$(/bin/esxcli system hostname get 2>/dev/null | awk '/Fully Qualified/ {print $NF}')
+VERSION=$(/bin/esxcli system version get 2>/dev/null | awk '/Version/ {print $3}')
+BUILD=$(/bin/esxcli system version get 2>/dev/null | awk '/Build/ {print $2}')
 pf_ok "Host: ${HOSTNAME:-unknown}  |  ESXi ${VERSION:-?}  build ${BUILD:-?}"
 
 # nohup
-if ! command -v nohup > /dev/null 2>&1; then
-    pf_fail "nohup not found -- patch cannot safely survive SSH disconnect"
+if [ ! -x "/bin/nohup" ]; then
+    pf_fail "nohup not found at /bin/nohup"
     fail "nohup is required."
 fi
 pf_ok "nohup available"
 
 # Maintenance mode
-MM_STATE=$(esxcli system maintenanceMode get 2>/dev/null)
+MM_STATE=$(/bin/esxcli system maintenanceMode get 2>/dev/null)
 if [ "$MM_STATE" = "Enabled" ]; then
     pf_warn "Host is already in maintenance mode"
 else
@@ -244,7 +244,7 @@ while IFS= read -r line; do
     eval "VMID_${IDX}=${VMID}"
     eval "VMNAME_${IDX}=${VMNAME}"
 done << VMLIST
-$(vim-cmd vmsvc/getallvms 2>/dev/null | tail -n +2)
+$(/bin/vim-cmd vmsvc/getallvms 2>/dev/null | tail -n +2)
 VMLIST
 VM_TOTAL=$IDX
 
@@ -263,7 +263,7 @@ else
     eval "MGMT_VMNAME=\$VMNAME_${VM_IDX}"
     info "Management VM: $MGMT_VMNAME (VMID $MGMT_VMID)"
 
-    VM_STATE=$(vim-cmd vmsvc/power.getstate "$MGMT_VMID" 2>/dev/null | tail -1)
+    VM_STATE=$(/bin/vim-cmd vmsvc/power.getstate "$MGMT_VMID" 2>/dev/null | tail -1)
     printf "%s" "$VM_STATE" | grep -qi "on" \
         || warn "VM does not appear to be powered on (state: ${VM_STATE})"
 fi
@@ -296,7 +296,7 @@ printf "%s\n" "$SEP"
 printf "  Host          : %s  (ESXi %s build %s)\n" "${HOSTNAME:-unknown}" "${VERSION:-?}" "${BUILD:-?}"
 printf "  Datastore     : %s\n" "$SELECTED_DS"
 printf "  Patch file    : %s\n" "$SELECTED_FILE"
-printf "  Command       : esxcli software vib %s %s\n" "$VIB_CMD" "$DEPOT_FLAG"
+printf "  Command       : /bin/esxcli software vib %s %s\n" "$VIB_CMD" "$DEPOT_FLAG"
 printf "  Management VM : %s\n" "$MGMT_VMNAME"
 printf "  Auto-exit MM  : %s\n" "$([ $AUTO_EXIT_MM -eq 1 ] && printf yes || printf no)"
 printf "\n  Sequence:\n"
@@ -333,7 +333,7 @@ if [ "$AUTO_EXIT_MM" -eq 1 ]; then
     cat >> /etc/rc.local.d/local.sh << 'RC_EOF'
 
 # ESXI_PATCH_EXIT_MM -- written by esxi-patch.sh, self-removes after one boot
-esxcli system maintenanceMode set --enable false
+/bin/esxcli system maintenanceMode set --enable false
 sed -i '/ESXI_PATCH_EXIT_MM/d' /etc/rc.local.d/local.sh
 sed -i '/maintenanceMode set --enable false/d' /etc/rc.local.d/local.sh
 RC_EOF
@@ -347,10 +347,10 @@ fi
 # ------------------------------------------------------------------------------
 
 info "[1/3] Entering maintenance mode..."
-esxcli system maintenanceMode set --enable true
+/bin/esxcli system maintenanceMode set --enable true
 
 WAITED=0
-while [ "$(esxcli system maintenanceMode get 2>/dev/null)" != "Enabled" ]; do
+while [ "$(/bin/esxcli system maintenanceMode get 2>/dev/null)" != "Enabled" ]; do
     sleep 5
     WAITED=$((WAITED+5))
     info "      Waiting... (${WAITED}s)"
@@ -391,26 +391,26 @@ info "========================================================"
 # -- Graceful VM shutdown --
 if [ -n "\$MGMT_VMID" ]; then
     info "[2/3] Sending graceful shutdown to '\${MGMT_VMNAME}' (VMID \${MGMT_VMID})"
-    VM_STATE=\$(vim-cmd vmsvc/power.getstate "\$MGMT_VMID" 2>/dev/null | tail -1)
+    VM_STATE=\$(/bin/vim-cmd vmsvc/power.getstate "\$MGMT_VMID" 2>/dev/null | tail -1)
 
     if printf "%s" "\$VM_STATE" | grep -qi "on"; then
-        vim-cmd vmsvc/power.shutdown "\$MGMT_VMID" >> "\$LOG_FILE" 2>&1
+        /bin/vim-cmd vmsvc/power.shutdown "\$MGMT_VMID" >> "\$LOG_FILE" 2>&1
         info "      Shutdown signal sent -- waiting up to 90s..."
 
         WAITED=0
         while [ \$WAITED -lt 90 ]; do
             sleep 5
             WAITED=\$((WAITED+5))
-            STATE=\$(vim-cmd vmsvc/power.getstate "\$MGMT_VMID" 2>/dev/null | tail -1)
+            STATE=\$(/bin/vim-cmd vmsvc/power.getstate "\$MGMT_VMID" 2>/dev/null | tail -1)
             info "      State: \${STATE}  (\${WAITED}s)"
             printf "%s" "\$STATE" | grep -qi "off" && { ok "      VM powered off cleanly"; break; }
         done
 
         # Force off if still running
-        STATE=\$(vim-cmd vmsvc/power.getstate "\$MGMT_VMID" 2>/dev/null | tail -1)
+        STATE=\$(/bin/vim-cmd vmsvc/power.getstate "\$MGMT_VMID" 2>/dev/null | tail -1)
         if ! printf "%s" "\$STATE" | grep -qi "off"; then
             warn "      Graceful shutdown timed out -- forcing power off"
-            vim-cmd vmsvc/power.off "\$MGMT_VMID" >> "\$LOG_FILE" 2>&1
+            /bin/vim-cmd vmsvc/power.off "\$MGMT_VMID" >> "\$LOG_FILE" 2>&1
             sleep 5
         fi
     else
@@ -422,9 +422,9 @@ fi
 
 # -- Apply patch --
 info "[3/3] Applying patch..."
-info "      esxcli software vib \${VIB_CMD} \${DEPOT_FLAG} \${DEPOT_PATH}"
+info "      /bin/esxcli software vib \${VIB_CMD} \${DEPOT_FLAG} \${DEPOT_PATH}"
 
-esxcli software vib "\$VIB_CMD" "\$DEPOT_FLAG" "\$DEPOT_PATH" >> "\$LOG_FILE" 2>&1
+/bin/esxcli software vib "\$VIB_CMD" "\$DEPOT_FLAG" "\$DEPOT_PATH" >> "\$LOG_FILE" 2>&1
 PATCH_RC=\$?
 
 if [ \$PATCH_RC -ne 0 ]; then
@@ -433,7 +433,7 @@ if [ \$PATCH_RC -ne 0 ]; then
     else
         warn "Patch FAILED (exit code \$PATCH_RC) -- aborting reboot"
         warn "Exiting maintenance mode. Reconnect and check: \$LOG_FILE"
-        esxcli system maintenanceMode set --enable false
+        /bin/esxcli system maintenanceMode set --enable false
         sed -i '/ESXI_PATCH_EXIT_MM/d' /etc/rc.local.d/local.sh 2>/dev/null
         sed -i '/maintenanceMode set --enable false/d' /etc/rc.local.d/local.sh 2>/dev/null
         exit 1
@@ -448,7 +448,7 @@ EXECEOF
 chmod +x "$EXEC_SCRIPT"
 ok "Execution script ready"
 
-nohup sh "$EXEC_SCRIPT" >> "$LOG_FILE" 2>&1 &
+/bin/nohup sh "$EXEC_SCRIPT" >> "$LOG_FILE" 2>&1 &
 EXEC_PID=$!
 ok "Background process launched (PID $EXEC_PID)"
 seps
