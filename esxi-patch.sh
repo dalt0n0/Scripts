@@ -20,6 +20,9 @@ SEP_S="------------------------------------------------------------------------"
 LOG_FILE="/tmp/esxi-patch-$(date +%Y%m%d-%H%M%S).log"
 EXEC_SCRIPT="/tmp/esxi_patch_exec.sh"
 
+# ESXi doesn't always set a full PATH when running scripts from a datastore
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:$PATH
+
 # ------------------------------------------------------------------------------
 # LOGGING
 # ------------------------------------------------------------------------------
@@ -62,8 +65,8 @@ printf "\n  Running preflight checks...\n\n"
 
 PREFLIGHT_ERRORS=0
 
-# Root
-if [ "$(id -u)" -ne 0 ]; then
+# Root (ESXi BusyBox doesn't have id, use whoami)
+if [ "$(whoami 2>/dev/null)" != "root" ]; then
     pf_fail "Not running as root"
     fail "Re-run as root."
 fi
