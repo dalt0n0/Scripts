@@ -160,10 +160,18 @@ case "$DS_IDX" in ''|*[!0-9]*) fail "Invalid input." ;; esac
 
 eval "SELECTED_DS=\$DSNAME_${DS_IDX}"
 DS_PATH="/vmfs/volumes/${SELECTED_DS}"
-PATCH_DIR="${DS_PATH}/patch"
 info "Datastore: $SELECTED_DS"
 
-[ -d "$PATCH_DIR" ] || fail "/patch directory not found at ${PATCH_DIR}"
+if [ -d "${DS_PATH}/patch" ]; then
+    PATCH_DIR="${DS_PATH}/patch"
+elif [ -d "${DS_PATH}/Patch" ]; then
+    PATCH_DIR="${DS_PATH}/Patch"
+elif [ -d "${DS_PATH}/PATCH" ]; then
+    PATCH_DIR="${DS_PATH}/PATCH"
+else
+    fail "No patch/Patch/PATCH directory found on ${SELECTED_DS}"
+fi
+info "Patch directory: $PATCH_DIR"
 
 # ------------------------------------------------------------------------------
 # SELECT PATCH FILE
